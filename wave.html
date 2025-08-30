@@ -1,0 +1,189 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Music Visualizer + Reliable Song ID</title>
+<style>
+  body {
+    margin: 0;
+    overflow: hidden;
+    background: #0b0c10;
+    font-family: 'Orbitron', sans-serif;
+    color: #0ff;
+  }
+  canvas { display: block; }
+  #songName {
+    position: absolute;
+    top: 20px;
+    width: 100%;
+    text-align: center;
+    font-size: 2em;
+    letter-spacing: 2px;
+    text-shadow: 0 0 10px #0ff, 0 0 20px #0ff, 0 0 30px #0ff;
+    transition: all 0.3s ease;
+  }
+  #controls {
+    position: absolute;
+    bottom: 30px;
+    left: 50%;
+    transform: translateX(-50%);
+    display: flex;
+    gap: 15px;
+  }
+  button, input[type="file"] {
+    padding: 12px 20px;
+    font-size: 16px;
+    border-radius: 8px;
+    border: none;
+    cursor: pointer;
+  }
+  button { background: #0ff; color: #000; }
+</style>
+</head>
+<body>
+
+<div id="songName">No song loaded</div>
+<div id="controls">
+  <input type="file" id="audioFile" accept="audio/*">
+  <button id="identifyBtn">Identify Song</button>
+</div>
+
+<canvas id="visualizer"></canvas>
+
+<script>
+const canvas = document.getElementById('visualizer');
+const ctx = canvas.getContext('2d');
+canvas.width = window.innerWidth;
+canvas.height = window.innerHeight;
+
+let audioCtx, analyser, dataArray, source, audio;
+let particles = [];
+const songNameDiv = document.getElementById('songName');
+const AUDD_API_KEY = "5d113a32ec605d3786691ae59c3add68"; // replace with your key
+
+// Handle audio file selection
+document.getElementById('audioFile').addEventListener('change', async (e) => {
+  const file = e.target.files[0];
+  if (!file) return;
+
+  if (audio) audio.pause(); // stop previous audio
+
+  audio = new Audio(URL.createObjectURL(file));
+  audio.crossOrigin = "anonymous";
+  audio.loop = true;
+  await audio.play();
+
+  if (!audioCtx) {
+    audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+  }
+
+  analyser = audioCtx.createAnalyser();
+  source = audioCtx.createMediaElementSource(audio);
+  source.connect(analyser);
+  analyser.connect(audioCtx.destination);
+  analyser.fftSize = 256;
+  dataArray = new Uint8Array(analyser.frequencyBinCount);
+
+  animate();
+});
+
+function createParticle(x, y, color, sizeMultiplier=1) {
+    particles.push({
+        x: x,
+        y: y,
+        vx: (Math.random() - 0.5) * 6,
+        vy: Math.random() * -6,
+        alpha: 1,
+        color: color,
+        size: (Math.random() * 4 + 2) * sizeMultiplier
+    });
+}
+
+function drawParticles() {
+    particles.forEach((p, index) => {
+        ctx.fillStyle = `rgba(${p.color.r},${p.color.g},${p.color.b},${p.alpha})`;
+        ctx.beginPath();
+        ctx.arc(p.x, p.y, p.size, 0, Math.PI * 2);
+        ctx.fill();
+        p.x += p.vx;
+        p.y += p.vy;
+        p.alpha -= 0.03;
+        if(p.alpha <= 0) particles.splice(index, 1);
+    });
+}
+
+function drawRotatingCubes(frame, avg) {
+    const cubeCount = 15;
+    for(let i = 0; i < cubeCount; i++) {
+        const angle = (frame * 0.01 + i) % (Math.PI * 2);
+        const size = 20 + Math.sin(frame * 0.05 + i) * avg / 3;
+        const x = canvas.width/2 + Math.cos(angle) * 300;
+        const y = canvas.height/2 + Math.sin(angle) * 200;
+        ctx.strokeStyle = `hsl(${(i*30 + frame) % 360}, 100%, 50%)`;
+        ctx.lineWidth = 2;
+        ctx.strokeRect(x-size/2, y-size/2, size, size);
+    }
+}
+
+function animate(frame=0) {
+    if (!analyser) return;
+    requestAnimationFrame(()=>animate(frame+1));
+    analyser.getByteFrequencyData(dataArray);
+    const avg = dataArray.reduce((a,b)=>a+b)/dataArray.length;
+
+    ctx.fillStyle = `rgba(11,12,16,${0.1 + avg/1500})`;
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+    const barWidth = (canvas.width / dataArray.length) * 2;
+    let x = 0;
+    for (let i = 0; i < dataArray.length; i++) {
+        const barHeight = dataArray[i] * 2;
+        const color = {r: 0, g: 255 - barHeight/2, b: 255};
+        ctx.fillStyle = `rgb(${color.r},${color.g},${color.b})`;
+        ctx.shadowBlur = 20;
+        ctx.shadowColor = `rgb(${color.r},${color.g},${color.b})`;
+        ctx.fillRect(x, canvas.height - barHeight, barWidth, barHeight);
+        if(barHeight > 150 && Math.random() > 0.4) createParticle(x + barWidth/2, canvas.height - barHeight, color, 1.5);
+        x += barWidth + 1;
+    }
+    drawParticles();
+    drawRotatingCubes(frame, avg);
+}
+
+window.addEventListener('resize', () => {
+    canvas.width = window.innerWidth;
+    canvas.height = window.innerHeight;
+});
+
+// Song identification
+document.getElementById('identifyBtn').addEventListener('click', async () => {
+  if (!audio) {
+    songNameDiv.innerText = "Load a song first!";
+    return;
+  }
+  songNameDiv.innerText = "Identifying song...";
+  try {
+    const response = await fetch('https://api.audd.io/', {
+      method: 'POST',
+      body: new FormData(Object.entries({
+        api_token: AUDD_API_KEY,
+        url: audio.src,
+        return: 'apple_music,spotify'
+      }).reduce((fd, [k,v]) => { fd.append(k,v); return fd; }, new FormData()))
+    });
+    const result = await response.json();
+    if(result.result){
+      const song = result.result;
+      songNameDiv.innerHTML = `🎵 ${song.title} - ${song.artist} <br> Album: ${song.album}`;
+    } else {
+      songNameDiv.innerText = "Song not recognized 😕";
+    }
+  } catch(err){
+    console.error(err);
+    songNameDiv.innerText = "Error identifying song";
+  }
+});
+</script>
+</body>
+</html>
